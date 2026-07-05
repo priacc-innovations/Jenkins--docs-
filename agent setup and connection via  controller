@@ -1,0 +1,18 @@
+launch instance and ssh into that 
+""
+sudo su 
+apt update 
+apt install openjdk-21-jdk -y
+""
+create foilder named "jenkins" and assin required permissions
+""
+mkdir jenkins
+chmod 700 jenkins
+cd jenkins
+""
+now to to master node
+click on new node --> name "agent" --->click on permanent agent -->Remote root directory (/home/ubuntu/jenkins) --> launch method (launch agent by connecting to the controller)
+click on create
+copy the commands for make agent online under "unix/linux"
+come to server 
+[/ubuntu/home/jenkins]# paste here .. and at the end of  the last  give space and  type this "&" enter "enter"
