@@ -1,0 +1,408 @@
+Yes bro. Since you're a DevOps Engineer, I'll explain the **industry-standard SSH method** to connect a **Jenkins Controller (Master)** to a **Jenkins Agent (Slave)** on Linux.
+
+## Architecture
+
+```
++---------------------------+
+| Jenkins Controller        |
+| 192.168.1.10              |
++-------------+-------------+
+              |
+              | SSH (Port 22)
+              |
++-------------v-------------+
+| Jenkins Agent             |
+| 192.168.1.20              |
++---------------------------+
+```
+
+The Jenkins Controller logs into the Agent using an **SSH private key** (never a password). Jenkins then copies its remoting JAR to the agent and starts the agent automatically. ([GitHub][1])
+
+---
+
+# Step 1: Install Java on the Agent
+
+SSH into the agent server.
+
+```bash
+sudo apt update
+sudo apt install openjdk-17-jdk -y
+```
+
+Verify:
+
+```bash
+java -version
+```
+
+---
+
+# Step 2: Install OpenSSH Server on the Agent
+
+```bash
+sudo apt install openssh-server -y
+```
+
+Enable it:
+
+```bash
+sudo systemctl enable ssh
+sudo systemctl start ssh
+sudo systemctl status ssh
+```
+
+Verify port 22:
+
+```bash
+sudo ss -tlnp | grep :22
+```
+
+Expected:
+
+```
+LISTEN 0 128 0.0.0.0:22
+```
+
+---
+
+# Step 3: Create a Jenkins User on the Agent
+
+```bash
+sudo adduser jenkins
+```
+
+or
+
+```bash
+sudo useradd -m -s /bin/bash jenkins
+sudo passwd jenkins
+```
+
+---
+
+# Step 4: Give Jenkins Required Permissions
+
+If Jenkins needs Docker:
+
+```bash
+sudo usermod -aG docker jenkins
+```
+
+If Jenkins needs sudo:
+
+```bash
+sudo usermod -aG sudo jenkins
+```
+
+(Optional) Configure passwordless sudo:
+
+```bash
+sudo visudo
+```
+
+Add:
+
+```
+jenkins ALL=(ALL) NOPASSWD:ALL
+```
+
+Only grant this if your jobs genuinely require it.
+
+---
+
+# Step 5: Create SSH Keys on the Jenkins Controller
+
+Switch to the Jenkins user:
+
+```bash
+sudo su - jenkins
+```
+
+Generate an SSH key:
+
+```bash
+ssh-keygen -t ed25519 -C "jenkins-agent"
+```
+
+Press Enter for all prompts.
+
+Files created:
+
+```
+~/.ssh/id_ed25519
+~/.ssh/id_ed25519.pub
+```
+
+(You can also use RSA 4096-bit keys, but Ed25519 is the modern default.)
+
+---
+
+# Step 6: Copy the Public Key to the Agent
+
+From the controller:
+
+```bash
+ssh-copy-id jenkins@192.168.1.20
+```
+
+Enter the password once.
+
+If `ssh-copy-id` isn't available:
+
+```bash
+cat ~/.ssh/id_ed25519.pub
+```
+
+Copy the output.
+
+On the agent:
+
+```bash
+mkdir -p ~/.ssh
+nano ~/.ssh/authorized_keys
+```
+
+Paste the key.
+
+---
+
+# Step 7: Set Correct SSH Permissions
+
+On the agent:
+
+```bash
+chmod 700 ~/.ssh
+chmod 600 ~/.ssh/authorized_keys
+chmod 700 ~
+```
+
+Correct ownership:
+
+```bash
+chown -R jenkins:jenkins ~/.ssh
+```
+
+These permissions are required for SSH key authentication to work reliably. ([Medium][2])
+
+---
+
+# Step 8: Test Passwordless SSH
+
+From the controller:
+
+```bash
+ssh jenkins@192.168.1.20
+```
+
+If everything is correct:
+
+```
+Welcome to Ubuntu...
+```
+
+It should **not** ask for a password.
+
+Exit:
+
+```bash
+exit
+```
+
+---
+
+# Step 9: Harden SSH Configuration (Recommended)
+
+On the agent:
+
+```bash
+sudo nano /etc/ssh/sshd_config
+```
+
+Recommended settings:
+
+```
+PermitRootLogin no
+PasswordAuthentication no
+PubkeyAuthentication yes
+PermitEmptyPasswords no
+MaxAuthTries 3
+```
+
+Restart SSH:
+
+```bash
+sudo systemctl restart ssh
+```
+
+**Important:** Only disable `PasswordAuthentication` after confirming SSH key login works, or you could lock yourself out.
+
+---
+
+# Step 10: Open Port 22 in the Firewall
+
+If using UFW:
+
+```bash
+sudo ufw allow 22/tcp
+sudo ufw reload
+```
+
+If on AWS EC2:
+
+Security Group → Inbound Rules
+
+```
+SSH
+TCP
+22
+Source = Jenkins Controller IP
+```
+
+Do **not** expose SSH to `0.0.0.0/0` unless absolutely necessary.
+
+---
+
+# Step 11: Add the SSH Key to Jenkins
+
+In Jenkins:
+
+```
+Manage Jenkins
+    ↓
+Credentials
+    ↓
+System
+    ↓
+Global Credentials
+    ↓
+Add Credentials
+```
+
+Select:
+
+```
+Kind:
+SSH Username with private key
+```
+
+Fill:
+
+```
+Username:
+jenkins
+
+Private Key:
+Enter directly
+
+Paste:
+id_ed25519 (private key)
+```
+
+Save the credential. ([Jenkins][3])
+
+---
+
+# Step 12: Create the Agent Node
+
+Go to:
+
+```
+Manage Jenkins
+↓
+Nodes
+↓
+New Node
+```
+
+Example configuration:
+
+```
+Node Name:
+linux-agent
+
+Type:
+Permanent Agent
+
+Remote Root Directory:
+/home/jenkins
+
+Labels:
+linux docker
+
+Launch Method:
+Launch agents via SSH
+
+Host:
+192.168.1.20
+
+Credentials:
+SSH credential created above
+
+Port:
+22
+```
+
+For host key verification, prefer a verified strategy such as **Known hosts** or **Manually trusted key verification** instead of disabling verification. ([Jenkins][3])
+
+Save the node.
+
+---
+
+# Step 13: Launch the Agent
+
+Click:
+
+```
+linux-agent
+↓
+Launch Agent
+```
+
+Jenkins will:
+
+1. SSH into the agent.
+2. Verify Java is installed.
+3. Copy `agent.jar`.
+4. Start the Jenkins remoting process.
+5. Mark the node **Online**. ([GitHub][1])
+
+---
+
+# Step 14: Verify the Connection
+
+Run on the agent:
+
+```bash
+ps -ef | grep agent.jar
+```
+
+You should see the Jenkins agent process running.
+
+---
+
+## Common Issues
+
+| Error                         | Cause                                   | Fix                                                  |
+| ----------------------------- | --------------------------------------- | ---------------------------------------------------- |
+| Permission denied (publickey) | Public key missing or wrong permissions | Check `authorized_keys` and file permissions         |
+| Connection refused            | SSH service not running                 | `sudo systemctl start ssh`                           |
+| java not found                | Java missing on agent                   | Install OpenJDK 17                                   |
+| Host key verification failed  | Host key not trusted                    | Configure known hosts or manually trust the host key |
+| Timeout                       | Port 22 blocked                         | Check firewall or cloud security group               |
+
+---
+
+### Best Practices
+
+* Use SSH key authentication only; avoid password authentication for Jenkins.
+* Create a dedicated `jenkins` user on the agent.
+* Disable root SSH login.
+* Restrict port 22 to the Jenkins controller's IP.
+* Keep Java updated on both controller and agent.
+* Use host key verification rather than disabling it to protect against man-in-the-middle attacks. ([Jenkins][3])
+
+If you're using **AWS EC2** for both the Jenkins controller and agent, I can also show you the complete setup with **Security Groups, IAM roles, and EC2 instances** from scratch.
+
+[1]: https://github.com/jenkinsci/ssh-agents-plugin/blob/main/doc/CONFIGURE.md?utm_source=chatgpt.com "ssh-agents-plugin/doc/CONFIGURE.md at main"
+[2]: https://medium.com/%40Shamimw/how-i-spent-hours-learning-ssh-access-in-jenkins-using-sshagent-so-you-dont-have-to-6d1420657084?utm_source=chatgpt.com "How I Spent Hours Learning SSH Access in Jenkins Using ..."
+[3]: https://www.jenkins.io/doc/book/using/using-agents/?utm_source=chatgpt.com "Using Jenkins agents"
