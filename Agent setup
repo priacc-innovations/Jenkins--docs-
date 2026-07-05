@@ -26,8 +26,9 @@ SSH into the agent server.
 
 ```bash
 sudo apt update
-sudo apt install openjdk-17-jdk -y
+sudo apt install openjdk-21-jdk -y
 ```
+hint : java version in both controller and agent node 
 
 Verify:
 
