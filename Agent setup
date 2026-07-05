@@ -157,8 +157,12 @@ Copy the output.
 
 On the agent:
 
-```bash
+switch to jenkins user
+'''
 sudo su - jenkins
+'''
+next :
+'''
 mkdir -p ~/.ssh
 nano ~/.ssh/authorized_keys
 ```
