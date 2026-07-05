@@ -179,6 +179,7 @@ chmod 700 ~
 Correct ownership:
 
 ```bash
+sudo su  - jenkins
 chown -R jenkins:jenkins ~/.ssh
 ```
 
