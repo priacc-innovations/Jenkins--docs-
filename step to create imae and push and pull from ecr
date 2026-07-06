@@ -1,0 +1,423 @@
+Since you're using **Jenkins + Docker + AWS**, the recommended approach is:
+
+**GitHub → Jenkins → Build Docker Image → Push Image to Amazon ECR → (Later) Deploy to ECS/EKS/EC2**
+
+---
+
+# Step 1: Create an Amazon ECR Repository
+
+1. Log in to AWS Console.
+2. Search for **Amazon Elastic Container Registry (ECR)**.
+3. Click **Create repository**.
+4. Choose:
+
+   * Repository name: `java-app`
+   * Visibility: **Private**
+5. Click **Create repository**.
+
+You'll get a repository URI like:
+
+```text
+123456789012.dkr.ecr.us-east-1.amazonaws.com/java-app
+```
+
+Save this URI.
+
+---
+
+# Step 2: Create an IAM User
+
+Go to
+
+AWS Console → IAM → Users → Create User
+
+Example
+
+```
+jenkins-ecr-user
+```
+
+Attach this policy
+
+```
+AmazonEC2ContainerRegistryFullAccess
+```
+
+or
+
+```
+AmazonEC2ContainerRegistryPowerUser
+```
+
+Create the user.
+
+---
+
+# Step 3: Generate Access Keys
+
+Open the IAM user.
+
+Go to
+
+```
+Security Credentials
+```
+
+↓
+
+```
+Create Access Key
+```
+
+Choose
+
+```
+Command Line Interface (CLI)
+```
+
+You'll receive
+
+```
+Access Key ID
+
+Secret Access Key
+```
+
+Save both.
+
+---
+
+# Step 4: Install AWS CLI on Jenkins Agent
+
+Ubuntu
+
+```bash
+sudo apt update
+sudo apt install awscli -y
+```
+
+Verify
+
+```bash
+aws --version
+```
+
+Example
+
+```
+aws-cli/2.18.x
+```
+
+---
+
+# Step 5: Configure AWS CLI
+
+Run
+
+```bash
+aws configure
+```
+
+Enter
+
+```
+AWS Access Key ID:
+XXXXXXXXXXXX
+
+AWS Secret Access Key:
+XXXXXXXXXXXXXXXXXXXX
+
+Region:
+us-east-1
+
+Output:
+json
+```
+
+Test
+
+```bash
+aws sts get-caller-identity
+```
+
+If it returns your AWS account details, it's working.
+
+---
+
+# Step 6: Install Docker on Jenkins Agent
+
+Check
+
+```bash
+docker --version
+```
+
+If Docker isn't installed:
+
+```bash
+sudo apt update
+sudo apt install docker.io -y
+```
+
+Start Docker
+
+```bash
+sudo systemctl enable docker
+sudo systemctl start docker
+```
+
+Allow the Jenkins user to run Docker
+
+```bash
+sudo usermod -aG docker jenkins
+```
+
+Restart Jenkins (or log out and back in to apply the new group membership).
+
+---
+
+# Step 7: Authenticate Docker to ECR
+
+Run
+
+```bash
+aws ecr get-login-password \
+--region us-east-1 | docker login \
+--username AWS \
+--password-stdin 123456789012.dkr.ecr.us-east-1.amazonaws.com
+```
+
+You should see
+
+```
+Login Succeeded
+```
+
+---
+
+# Step 8: Build Docker Image
+
+```bash
+docker build -t java-app .
+```
+
+Verify
+
+```bash
+docker images
+```
+
+---
+
+# Step 9: Tag the Image
+
+```bash
+docker tag java-app:latest \
+123456789012.dkr.ecr.us-east-1.amazonaws.com/java-app:latest
+```
+
+Check
+
+```bash
+docker images
+```
+
+You should see
+
+```
+java-app latest
+123456789012.dkr.ecr.us-east-1.amazonaws.com/java-app latest
+```
+
+---
+
+# Step 10: Push the Image
+
+```bash
+docker push \
+123456789012.dkr.ecr.us-east-1.amazonaws.com/java-app:latest
+```
+
+Example output
+
+```
+layer already exists
+layer pushed
+latest: digest: sha256:...
+```
+
+---
+
+# Step 11: Verify in ECR
+
+Open your ECR repository.
+
+Go to
+
+```
+Images
+```
+
+You should see
+
+```
+latest
+```
+
+---
+
+# Step 12: Add AWS Credentials to Jenkins (Recommended)
+
+Instead of storing credentials on the agent with `aws configure`, use Jenkins credentials.
+--> go to plugins install "aws credentials" with restart jenkins
+
+1. Jenkins Dashboard
+2. **Manage Jenkins**
+3. **Credentials**
+4. Select your credentials store (e.g. Global)
+5. **Add Credentials**
+6. Kind: **AWS Credentials**
+7. Enter:
+
+   * Access Key ID
+   * Secret Access Key
+8. Give it an ID such as:
+
+   ```
+   aws-ecr-creds
+   ```
+
+This is more secure than using `aws configure`.
+
+---
+
+# Step 13: Jenkins Pipeline Example
+
+Replace:
+
+* `ACCOUNT_ID`
+* `REGION`
+* `REPOSITORY_NAME`
+
+with your values.
+======================================================================================================================================
+```groovy
+ pipeline {
+    agent {
+        label 'Agent'
+    }
+
+    environment {
+        AWS_REGION = 'us-east-1'
+        AWS_ACCOUNT_ID = '123456789012'      // Replace with your AWS Account ID
+        ECR_REPO = 'java-app'
+        IMAGE_TAG = 'latest'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                git branch: 'main',
+                    url: 'https://github.com/devops-srinivasulu/jenkins-tutorial.git'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                dir('3-java-jenkins-docker-app') {
+                    sh '''
+                    docker build -t java-app:latest .
+                    '''
+                }
+            }
+        }
+
+        stage('Login to ECR') {
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws-ecr-creds'
+                ]]) {
+                    sh '''
+                    aws ecr get-login-password --region $AWS_REGION | docker login \
+                    --username AWS \
+                    --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+                    '''
+                }
+            }
+        }
+
+        stage('Tag Docker Image') {
+            steps {
+                sh '''
+                docker tag java-app:latest \
+                $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
+                '''
+            }
+        }
+
+        stage('Push Image to ECR') {
+            steps {
+                sh '''
+                docker push \
+                $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
+                '''
+            }
+        }
+
+        stage('Pull Image from ECR') {
+            steps {
+                sh '''
+                docker pull \
+                $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
+                '''
+            }
+        }
+
+        stage('Run Docker Container') {
+            steps {
+                sh '''
+                docker rm -f java-container || true
+
+                docker run -d \
+                  --name java-container \
+                  -p 8080:8080 \
+                  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
+                '''
+            }
+        }
+    }
+}
+```
+=====================================================================================================================================================
+---
+
+## Complete Flow
+
+```text
+GitHub
+   │
+   ▼
+Jenkins
+   │
+   ▼
+Checkout Code
+   │
+   ▼
+Build Docker Image
+   │
+   ▼
+Login to ECR
+   │
+   ▼
+Tag Image
+   │
+   ▼
+Push Image to Amazon ECR
+   │
+   ▼
+Amazon ECR Repository
+```
+
+This is the standard workflow used in many production CI/CD pipelines. Later, you can extend it to deploy the pushed image automatically to services such as **Amazon Elastic Container Service (ECS)**, **Amazon Elastic Kubernetes Service (EKS)**, or an EC2 instance.
